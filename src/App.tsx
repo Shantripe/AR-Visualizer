@@ -1,10 +1,17 @@
 import { useEffect, useRef, useMemo } from "react";
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-import { createFoldedShape } from "./geometry/foldedShape";
+import { FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
+import { createBaseGeometry, applyTwist } from "./geometry/foldedShape";
+import { mapHandToFoldAmount } from "./handControl/mapHandToParams";
 
-function FoldedMesh() {
-  const geometry = useMemo(() => createFoldedShape(0.6), []);
+function FoldedMesh({ foldAmountRef }: { foldAmountRef: React.MutableRefObject<number> }) {
+  const geometry = useMemo(() => createBaseGeometry(), []);
+
+  useFrame(() => {
+    applyTwist(geometry, foldAmountRef.current);
+  });
+
   return (
     <mesh geometry={geometry}>
       <meshStandardMaterial color="white" side={2} />
@@ -14,21 +21,54 @@ function FoldedMesh() {
 
 function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const foldAmountRef = useRef(0.6); // fallback value when no hand is detected
 
   useEffect(() => {
-    async function startWebcam() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720 },
+    let handLandmarker: HandLandmarker;
+    let animationFrameId: number;
+
+    async function setup() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 1280, height: 720 },
+      });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await new Promise((resolve) => {
+          videoRef.current!.onloadedmetadata = resolve;
         });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-      } catch (err) {
-        console.error("Webcam access failed:", err);
       }
+
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm"
+      );
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numHands: 1,
+      });
+
+      function detectLoop() {
+        if (!videoRef.current) return;
+        const results = handLandmarker.detectForVideo(videoRef.current, performance.now());
+        const fold = mapHandToFoldAmount(results);
+        if (fold !== null) {
+          foldAmountRef.current = fold;
+        }
+        animationFrameId = requestAnimationFrame(detectLoop);
+      }
+
+      detectLoop();
     }
-    startWebcam();
+
+    setup();
+
+    return () => {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    };
   }, []);
 
   return (
@@ -55,7 +95,7 @@ function App() {
       >
         <ambientLight intensity={0.6} />
         <directionalLight position={[2, 2, 2]} intensity={1} />
-        <FoldedMesh />
+        <FoldedMesh foldAmountRef={foldAmountRef} />
         <OrbitControls />
       </Canvas>
     </div>

@@ -1,22 +1,27 @@
 import * as THREE from "three";
 
-// Builds a twisted ribbon by rotating each cross-section of a flat strip
-// around its central axis, more twist toward the ends. This is how a real
-// twisted piece of paper behaves — not a bulge, an actual rotation.
-export function createFoldedShape(foldAmount: number): THREE.BufferGeometry {
-  const geometry = new THREE.PlaneGeometry(2, 0.6, 60, 4);
+// Creates the flat, untwisted base shape once.
+export function createBaseGeometry(): THREE.PlaneGeometry {
+  return new THREE.PlaneGeometry(2, 0.6, 60, 4);
+}
+
+// Reshapes an existing geometry's vertices in place based on foldAmount.
+// Called every frame — this is why it mutates rather than rebuilds.
+export function applyTwist(geometry: THREE.BufferGeometry, foldAmount: number) {
   const position = geometry.attributes.position;
 
+  // Cache the original flat coordinates on first call, so we always twist
+  // from the true flat shape rather than compounding twist on top of twist.
+  if (!geometry.userData.originalPositions) {
+    geometry.userData.originalPositions = position.array.slice();
+  }
+  const original = geometry.userData.originalPositions as Float32Array;
+
   for (let i = 0; i < position.count; i++) {
-    const x = position.getX(i);
-    const y = position.getY(i);
+    const x = original[i * 3];
+    const y = original[i * 3 + 1];
 
-    // Twist angle grows toward the ends (x = -1 or 1), maxing at a
-    // half-twist (90°) per side at foldAmount = 1
     const twistAngle = x * (Math.PI / 2) * foldAmount;
-
-    // Actual rotation of the (y, z) cross-section around the x-axis —
-    // this is what makes it spiral instead of pinch into a lens shape
     const newY = y * Math.cos(twistAngle);
     const newZ = y * Math.sin(twistAngle);
 
@@ -24,6 +29,6 @@ export function createFoldedShape(foldAmount: number): THREE.BufferGeometry {
     position.setZ(i, newZ);
   }
 
+  position.needsUpdate = true;
   geometry.computeVertexNormals();
-  return geometry;
 }
