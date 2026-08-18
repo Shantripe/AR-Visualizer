@@ -3,10 +3,12 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
 import { createBaseGeometry, applyTwist } from "./geometry/foldedShape";
+import { createTestTexture } from "./geometry/testTexture";
 import { mapHandToFoldAmount } from "./handControl/mapHandToParams";
 
 function FoldedMesh({ foldAmountRef }: { foldAmountRef: React.MutableRefObject<number> }) {
   const geometry = useMemo(() => createBaseGeometry(), []);
+  const texture = useMemo(() => createTestTexture(), []);
 
   useFrame(() => {
     applyTwist(geometry, foldAmountRef.current);
@@ -14,7 +16,7 @@ function FoldedMesh({ foldAmountRef }: { foldAmountRef: React.MutableRefObject<n
 
   return (
     <mesh geometry={geometry}>
-      <meshStandardMaterial color="white" side={2} />
+      <meshStandardMaterial map={texture} side={2} />
     </mesh>
   );
 }
