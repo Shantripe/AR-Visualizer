@@ -1,29 +1,46 @@
-import { useEffect, useRef, useMemo } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
-import { FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
-import { createBaseGeometry, applyTwist } from "./geometry/foldedShape";
-import { createTestTexture } from "./geometry/testTexture";
-import { mapHandToFoldAmount } from "./handControl/mapHandToParams";
+import { useEffect, useRef, useState, useMemo } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
+import { landmarkToWorldPosition, predictPosition, remapForCrop } from "./handControl/screenToWorld";
+import { createFingerWebGeometry, updateFingerWebGeometry } from "./geometry/fingerWeb";
 
-function FoldedMesh({ foldAmountRef }: { foldAmountRef: React.MutableRefObject<number> }) {
-  const geometry = useMemo(() => createBaseGeometry(), []);
-  const texture = useMemo(() => createTestTexture(), []);
+// Thumb tip, index tip, middle tip — add 16 (ring) and 20 (pinky) later
+// to extend this to a 5-point web without touching any other logic.
+const FINGER_INDICES = [4, 8, 12];
+
+type TimedPoint = { x: number; y: number; t: number };
+
+function FingerWeb({
+  historiesRef,
+}: {
+  historiesRef: React.MutableRefObject<Record<number, TimedPoint[]>>;
+}) {
+  const geometry = useMemo(() => createFingerWebGeometry(FINGER_INDICES.length), []);
+  const { camera } = useThree();
 
   useFrame(() => {
-    applyTwist(geometry, foldAmountRef.current);
+    const positions = [];
+    for (const idx of FINGER_INDICES) {
+      const history = historiesRef.current[idx];
+      if (!history || history.length === 0) return; // wait until every finger has been seen at least once
+      const predicted = predictPosition(history);
+      if (!predicted) return;
+      positions.push(landmarkToWorldPosition(predicted.x, predicted.y, camera));
+    }
+    updateFingerWebGeometry(geometry, positions);
   });
 
   return (
     <mesh geometry={geometry}>
-      <meshStandardMaterial map={texture} side={2} />
+      <meshBasicMaterial color="#00FF88" side={2} transparent opacity={0.7} />
     </mesh>
   );
 }
 
 function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const foldAmountRef = useRef(0.6); // fallback value when no hand is detected
+  const fingerHistoriesRef = useRef<Record<number, TimedPoint[]>>({});
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     let handLandmarker: HandLandmarker;
@@ -31,7 +48,7 @@ function App() {
 
     async function setup() {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720 },
+        video: { width: 640, height: 480 },
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -53,13 +70,34 @@ function App() {
         numHands: 1,
       });
 
+      setReady(true);
+
       function detectLoop() {
         if (!videoRef.current) return;
-        const results = handLandmarker.detectForVideo(videoRef.current, performance.now());
-        const fold = mapHandToFoldAmount(results);
-        if (fold !== null) {
-          foldAmountRef.current = fold;
+        const results: HandLandmarkerResult = handLandmarker.detectForVideo(
+          videoRef.current,
+          performance.now()
+        );
+
+        if (results.landmarks && results.landmarks.length > 0) {
+          const hand = results.landmarks[0];
+          FINGER_INDICES.forEach((idx) => {
+            const point = hand[idx];
+            const corrected = remapForCrop(
+              point.x,
+              point.y,
+              videoRef.current!.videoWidth,
+              videoRef.current!.videoHeight,
+              window.innerWidth,
+              window.innerHeight
+            );
+            if (!fingerHistoriesRef.current[idx]) fingerHistoriesRef.current[idx] = [];
+            const history = fingerHistoriesRef.current[idx];
+            history.push({ x: corrected.x, y: corrected.y, t: performance.now() });
+            if (history.length > 5) history.shift();
+          });
         }
+
         animationFrameId = requestAnimationFrame(detectLoop);
       }
 
@@ -70,6 +108,11 @@ function App() {
 
     return () => {
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      if (handLandmarker) handLandmarker.close();
+      if (videoRef.current?.srcObject) {
+        const stream = videoRef.current.srcObject as MediaStream;
+        stream.getTracks().forEach((track) => track.stop());
+      }
     };
   }, []);
 
@@ -95,10 +138,7 @@ function App() {
         style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%" }}
         gl={{ alpha: true }}
       >
-        <ambientLight intensity={0.6} />
-        <directionalLight position={[2, 2, 2]} intensity={1} />
-        <FoldedMesh foldAmountRef={foldAmountRef} />
-        <OrbitControls />
+        {ready && <FingerWeb historiesRef={fingerHistoriesRef} />}
       </Canvas>
     </div>
   );
