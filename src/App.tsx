@@ -1,45 +1,37 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import { landmarkToWorldPosition, predictPosition, remapForCrop } from "./handControl/screenToWorld";
-import { createFingerWebGeometry, updateFingerWebGeometry } from "./geometry/fingerWeb";
 
-// Thumb tip, index tip, middle tip — add 16 (ring) and 20 (pinky) later
-// to extend this to a 5-point web without touching any other logic.
-const FINGER_INDICES = [4, 8, 12];
+const INDEX_TIP = 8;
 
 type TimedPoint = { x: number; y: number; t: number };
 
-function FingerWeb({
-  historiesRef,
-}: {
-  historiesRef: React.MutableRefObject<Record<number, TimedPoint[]>>;
-}) {
-  const geometry = useMemo(() => createFingerWebGeometry(FINGER_INDICES.length), []);
+function HandDot({ historyRef, color }: { historyRef: React.MutableRefObject<TimedPoint[]>; color: string }) {
+  const meshRef = useRef<THREE.Mesh>(null);
   const { camera } = useThree();
 
   useFrame(() => {
-    const positions = [];
-    for (const idx of FINGER_INDICES) {
-      const history = historiesRef.current[idx];
-      if (!history || history.length === 0) return; // wait until every finger has been seen at least once
-      const predicted = predictPosition(history);
-      if (!predicted) return;
-      positions.push(landmarkToWorldPosition(predicted.x, predicted.y, camera));
-    }
-    updateFingerWebGeometry(geometry, positions);
+    const predicted = predictPosition(historyRef.current);
+    if (!meshRef.current || !predicted) return;
+    const pos = landmarkToWorldPosition(predicted.x, predicted.y, camera);
+    meshRef.current.position.copy(pos);
   });
 
   return (
-    <mesh geometry={geometry}>
-      <meshBasicMaterial color="#00FF88" side={2} transparent opacity={0.7} />
+    <mesh ref={meshRef}>
+      <sphereGeometry args={[0.08, 16, 16]} />
+      <meshBasicMaterial color={color} />
     </mesh>
   );
 }
 
 function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const fingerHistoriesRef = useRef<Record<number, TimedPoint[]>>({});
+  // one history array per hand slot (0 and 1) — MediaPipe gives hands back
+  // as an array, so results.landmarks[0] and [1] are our two hands
+  const hand0HistoryRef = useRef<TimedPoint[]>([]);
+  const hand1HistoryRef = useRef<TimedPoint[]>([]);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -67,34 +59,40 @@ function App() {
           delegate: "GPU",
         },
         runningMode: "VIDEO",
-        numHands: 1,
+        numHands: 2,
       });
 
       setReady(true);
 
+            let frameCount = 0;
+      const DETECT_EVERY_N_FRAMES = 3; // tune this: higher = less lag-causing blocking, but less frequent real tracking updates
+
       function detectLoop() {
         if (!videoRef.current) return;
-        const results: HandLandmarkerResult = handLandmarker.detectForVideo(
-          videoRef.current,
-          performance.now()
-        );
+        frameCount++;
 
-        if (results.landmarks && results.landmarks.length > 0) {
-          const hand = results.landmarks[0];
-          FINGER_INDICES.forEach((idx) => {
-            const point = hand[idx];
+        if (frameCount % DETECT_EVERY_N_FRAMES === 0) {
+          const results: HandLandmarkerResult = handLandmarker.detectForVideo(
+            videoRef.current,
+            performance.now()
+          );
+
+          const historyRefs = [hand0HistoryRef, hand1HistoryRef];
+
+          historyRefs.forEach((historyRef, handIndex) => {
+            const hand = results.landmarks?.[handIndex];
+            if (!hand) return;
+            const tip = hand[INDEX_TIP];
             const corrected = remapForCrop(
-              point.x,
-              point.y,
+              tip.x,
+              tip.y,
               videoRef.current!.videoWidth,
               videoRef.current!.videoHeight,
               window.innerWidth,
               window.innerHeight
             );
-            if (!fingerHistoriesRef.current[idx]) fingerHistoriesRef.current[idx] = [];
-            const history = fingerHistoriesRef.current[idx];
-            history.push({ x: corrected.x, y: corrected.y, t: performance.now() });
-            if (history.length > 5) history.shift();
+            historyRef.current.push({ x: corrected.x, y: corrected.y, t: performance.now() });
+            if (historyRef.current.length > 5) historyRef.current.shift();
           });
         }
 
@@ -138,7 +136,12 @@ function App() {
         style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%" }}
         gl={{ alpha: true }}
       >
-        {ready && <FingerWeb historiesRef={fingerHistoriesRef} />}
+        {ready && (
+          <>
+            <HandDot historyRef={hand0HistoryRef} color="#00FF88" />
+            <HandDot historyRef={hand1HistoryRef} color="#FF3388" />
+          </>
+        )}
       </Canvas>
     </div>
   );
