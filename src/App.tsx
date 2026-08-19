@@ -2,36 +2,49 @@ import { useEffect, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import { landmarkToWorldPosition, predictPosition, remapForCrop } from "./handControl/screenToWorld";
-
-const INDEX_TIP = 8;
+import { getExtendedFingers, FINGER_TIPS } from "./handControl/fingerExtension";
 
 type TimedPoint = { x: number; y: number; t: number };
+type HandState = {
+  histories: Record<number, TimedPoint[]>; // keyed by finger tip landmark index
+  extended: Set<number>;
+};
 
-function HandDot({ historyRef, color }: { historyRef: React.MutableRefObject<TimedPoint[]>; color: string }) {
-  const meshRef = useRef<THREE.Mesh>(null);
+function FingerDots({ handStateRef }: { handStateRef: React.MutableRefObject<HandState> }) {
+  const meshRefs = useRef<Record<number, THREE.Mesh | null>>({});
   const { camera } = useThree();
 
   useFrame(() => {
-    const predicted = predictPosition(historyRef.current);
-    if (!meshRef.current || !predicted) return;
-    const pos = landmarkToWorldPosition(predicted.x, predicted.y, camera);
-    meshRef.current.position.copy(pos);
+    FINGER_TIPS.forEach((tipIdx) => {
+      const mesh = meshRefs.current[tipIdx];
+      const history = handStateRef.current.histories[tipIdx];
+      if (!mesh || !history || history.length === 0) return;
+      const predicted = predictPosition(history);
+      if (!predicted) return;
+      const pos = landmarkToWorldPosition(predicted.x, predicted.y, camera);
+      mesh.position.copy(pos);
+      const isExtended = handStateRef.current.extended.has(tipIdx);
+      (mesh.material as THREE.MeshBasicMaterial).color.set(isExtended ? "#00FF88" : "#555555");
+      mesh.visible = history.length > 0;
+    });
   });
 
   return (
-    <mesh ref={meshRef}>
-      <sphereGeometry args={[0.08, 16, 16]} />
-      <meshBasicMaterial color={color} />
-    </mesh>
+    <>
+      {FINGER_TIPS.map((tipIdx) => (
+        <mesh key={tipIdx} ref={(el) => { meshRefs.current[tipIdx] = el; }}>
+          <sphereGeometry args={[0.06, 16, 16]} />
+          <meshBasicMaterial color="#555555" />
+        </mesh>
+      ))}
+    </>
   );
 }
 
 function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
-  // one history array per hand slot (0 and 1) — MediaPipe gives hands back
-  // as an array, so results.landmarks[0] and [1] are our two hands
-  const hand0HistoryRef = useRef<TimedPoint[]>([]);
-  const hand1HistoryRef = useRef<TimedPoint[]>([]);
+  const hand0Ref = useRef<HandState>({ histories: {}, extended: new Set() });
+  const hand1Ref = useRef<HandState>({ histories: {}, extended: new Set() });
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -64,8 +77,8 @@ function App() {
 
       setReady(true);
 
-            let frameCount = 0;
-      const DETECT_EVERY_N_FRAMES = 3; // tune this: higher = less lag-causing blocking, but less frequent real tracking updates
+      let frameCount = 0;
+      const DETECT_EVERY_N_FRAMES = 3;
 
       function detectLoop() {
         if (!videoRef.current) return;
@@ -77,22 +90,29 @@ function App() {
             performance.now()
           );
 
-          const historyRefs = [hand0HistoryRef, hand1HistoryRef];
+          const handRefs = [hand0Ref, hand1Ref];
 
-          historyRefs.forEach((historyRef, handIndex) => {
+          handRefs.forEach((handRef, handIndex) => {
             const hand = results.landmarks?.[handIndex];
             if (!hand) return;
-            const tip = hand[INDEX_TIP];
-            const corrected = remapForCrop(
-              tip.x,
-              tip.y,
-              videoRef.current!.videoWidth,
-              videoRef.current!.videoHeight,
-              window.innerWidth,
-              window.innerHeight
-            );
-            historyRef.current.push({ x: corrected.x, y: corrected.y, t: performance.now() });
-            if (historyRef.current.length > 5) historyRef.current.shift();
+
+            handRef.current.extended = getExtendedFingers(hand);
+
+            FINGER_TIPS.forEach((tipIdx) => {
+              const point = hand[tipIdx];
+              const corrected = remapForCrop(
+                point.x,
+                point.y,
+                videoRef.current!.videoWidth,
+                videoRef.current!.videoHeight,
+                window.innerWidth,
+                window.innerHeight
+              );
+              if (!handRef.current.histories[tipIdx]) handRef.current.histories[tipIdx] = [];
+              const hist = handRef.current.histories[tipIdx];
+              hist.push({ x: corrected.x, y: corrected.y, t: performance.now() });
+              if (hist.length > 5) hist.shift();
+            });
           });
         }
 
@@ -138,8 +158,8 @@ function App() {
       >
         {ready && (
           <>
-            <HandDot historyRef={hand0HistoryRef} color="#00FF88" />
-            <HandDot historyRef={hand1HistoryRef} color="#FF3388" />
+            <FingerDots handStateRef={hand0Ref} />
+            <FingerDots handStateRef={hand1Ref} />
           </>
         )}
       </Canvas>
