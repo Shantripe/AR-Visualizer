@@ -1,30 +1,31 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import { landmarkToWorldPosition, predictPosition, remapForCrop } from "./handControl/screenToWorld";
 import { getExtendedFingers, FINGER_TIPS } from "./handControl/fingerExtension";
 import { sortPointsAngularly } from "./handControl/sortPoints";
 import { createFingerWebGeometry, updateFingerWebGeometry } from "./geometry/fingerWeb";
+import { createTestTexture } from "./geometry/testTexture";
 
 type TimedPoint = { x: number; y: number; t: number };
 type HandState = {
   histories: Record<number, TimedPoint[]>;
   extended: Set<number>;
-  missCount: number; // consecutive detection cycles this hand hasn't been seen
+  missCount: number;
 };
 
 function FingerDots({ handStateRef }: { handStateRef: React.MutableRefObject<HandState> }) {
   const meshRefs = useRef<Record<number, THREE.Mesh | null>>({});
   const { camera } = useThree();
 
-    useFrame(() => {
+  useFrame(() => {
     FINGER_TIPS.forEach((tipIdx) => {
       const mesh = meshRefs.current[tipIdx];
       if (!mesh) return;
 
       const history = handStateRef.current.histories[tipIdx];
       if (!history || history.length === 0) {
-        mesh.visible = false; // this line was missing — dots now actually hide instead of freezing in place
+        mesh.visible = false;
         return;
       }
 
@@ -54,9 +55,6 @@ function FingerDots({ handStateRef }: { handStateRef: React.MutableRefObject<Han
   );
 }
 
-// The actual feature: gathers every currently-extended fingertip across
-// BOTH hands, sorts them into a clean order, and builds a live polygon.
-// Rebuilds geometry only when the point count actually changes.
 function CombinedWeb({
   hand0Ref,
   hand1Ref,
@@ -68,6 +66,7 @@ function CombinedWeb({
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
   const pointCountRef = useRef(0);
   const { camera } = useThree();
+  const texture = useMemo(() => createTestTexture(), []);
 
   useFrame(() => {
     const points: THREE.Vector3[] = [];
@@ -104,7 +103,7 @@ function CombinedWeb({
   return (
     <mesh ref={meshRef} visible={false}>
       <bufferGeometry />
-      <meshBasicMaterial color="#00FF88" side={2} transparent opacity={0.6} />
+      <meshBasicMaterial map={texture} side={2} transparent opacity={0.9} />
     </mesh>
   );
 }
@@ -160,12 +159,12 @@ function App() {
 
           const handRefs = [hand0Ref, hand1Ref];
 
-                    handRefs.forEach((handRef, handIndex) => {
+          handRefs.forEach((handRef, handIndex) => {
             const hand = results.landmarks?.[handIndex];
 
             if (!hand) {
               handRef.current.missCount++;
-              const MISS_THRESHOLD = 2; // consecutive missed cycles before we clear — tune if twitchy or laggy
+              const MISS_THRESHOLD = 4;
               if (handRef.current.missCount > MISS_THRESHOLD) {
                 handRef.current.histories = {};
                 handRef.current.extended = new Set();

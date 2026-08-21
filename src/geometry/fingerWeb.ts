@@ -6,15 +6,31 @@ import * as THREE from "three";
 // rewrite needed.
 export function createFingerWebGeometry(numFingers: number): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
-  const vertexCount = numFingers + 1; // center + one per finger
+  const vertexCount = numFingers + 1;
   const positions = new Float32Array(vertexCount * 3);
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geometry.attributes.position.setUsage(THREE.DynamicDrawUsage);
 
+  // UVs assigned once at creation, based on an even circular layout —
+  // these stay FIXED even as positions move every frame. That's
+  // intentional: each vertex keeps its assigned patch of the image,
+  // while the actual triangle shapes stretch to match your real hand
+  // pose. This is what makes the texture distort with your gesture
+  // instead of just sitting static underneath it.
+  const uvs = new Float32Array(vertexCount * 2);
+  uvs[0] = 0.5;
+  uvs[1] = 0.5; // center vertex maps to the middle of the image
+  for (let i = 0; i < numFingers; i++) {
+    const angle = (i / numFingers) * Math.PI * 2;
+    uvs[(i + 1) * 2] = Math.cos(angle) * 0.5 + 0.5;
+    uvs[(i + 1) * 2 + 1] = Math.sin(angle) * 0.5 + 0.5;
+  }
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+
   const indices: number[] = [];
   for (let i = 0; i < numFingers; i++) {
     const next = (i + 1) % numFingers;
-    indices.push(0, i + 1, next + 1); // center, this finger, next finger
+    indices.push(0, i + 1, next + 1);
   }
   geometry.setIndex(indices);
 
